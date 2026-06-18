@@ -1,0 +1,60 @@
+# tuned.cnf - MariaDB for a read-heavy WordPress workload behind a cache.
+#
+# Key insight: with a ~97% full-page cache hit ratio, the database only ever
+# sees the "long tail" - cache misses, logged-in users, writes (comments,
+# orders). That traffic is low-volume but latency-sensitive, so the tuning
+# goal is "keep the working set in RAM and don't waste cycles on features that
+# cost more than they save".
+
+[mysqld]
+
+# ---- the single most important knob -------------------------------------
+# InnoDB buffer pool holds data + indexes in RAM. Sized to fit the hot working
+# set so reads almost never touch disk. Rule of thumb on a dedicated DB box is
+# ~70-80% of RAM; here we share the node with PHP + nginx, so this is sized to
+# the working set, not the machine. Two instances reduce mutex contention.
+innodb_buffer_pool_size       = 4G
+innodb_buffer_pool_instances  = 2
+
+# ---- redo log ------------------------------------------------------------
+# Large redo logs let InnoDB batch writes and flush less often -> far less
+# write amplification under bursty comment/order traffic.
+innodb_log_file_size          = 512M
+
+# ---- durability/throughput trade-off ------------------------------------
+# =2 flushes the log to OS cache every commit but only fsync()s once per
+# second. You can lose ~1s of writes on an OS crash (not a mysqld crash). For
+# a content site that is an excellent trade; for a payment ledger it would not
+# be. Know which one you are running.
+innodb_flush_log_at_trx_commit = 2
+innodb_flush_method            = O_DIRECT   # skip the double OS page cache
+
+# ---- I/O sizing (assumes SSD/NVMe) --------------------------------------
+innodb_io_capacity             = 2000
+innodb_io_capacity_max         = 4000
+innodb_read_io_threads         = 4
+innodb_write_io_threads        = 4
+
+# ---- the query cache is OFF, on purpose ---------------------------------
+# MySQL/MariaDB's query cache serialises writes behind a single global mutex
+# and is a net negative on any concurrent, write-touching workload. It is
+# removed entirely in MySQL 8. Full-page caching in Redis is the right layer
+# for this job; the DB query cache just adds a contention point. Leave it dead.
+query_cache_type  = 0
+query_cache_size  = 0
+
+# ---- connections + temp tables ------------------------------------------
+# PHP-FPM caps concurrency at ~30 workers, so we don't need hundreds of
+# connections; a generous-but-bounded number plus a warm thread cache avoids
+# both exhaustion and thrash.
+max_connections   = 100
+thread_cache_size = 64
+table_open_cache  = 4000
+
+tmp_table_size      = 128M
+max_heap_table_size = 128M
+
+# slow query log: the cheapest production observability you can enable
+slow_query_log       = 1
+slow_query_log_file  = /var/log/mysql/slow.log
+long_query_time      = 1
