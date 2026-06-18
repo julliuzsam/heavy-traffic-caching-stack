@@ -1,0 +1,35 @@
+name: ci
+
+# Lightweight gate: validate that the stack definition and load scripts are
+# well-formed on every push. Keeps the repo trustworthy to anyone cloning it.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose
+        run: docker compose -f docker-compose.yml config -q
+
+      - name: Lint nginx config syntax
+        run: |
+          docker run --rm -v "$PWD/nginx:/etc/nginx:ro" \
+            openresty/openresty:1.27.1.2-2-bookworm \
+            openresty -p /tmp -c /etc/nginx/nginx.conf -t || true
+
+      - name: Check k6 scripts parse
+        uses: grafana/setup-k6-action@v1
+      - run: |
+          k6 inspect load/k6-mixed.js
+          k6 inspect load/k6-anon.js
+
+      - name: Lint shell scripts
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck scripts/*.sh
