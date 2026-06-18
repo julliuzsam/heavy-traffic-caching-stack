@@ -1,0 +1,4 @@
+.env
+*.log
+load/results/
+.DS_Store
