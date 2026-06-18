@@ -1,0 +1,66 @@
+# Reproducible, single-command stack:
+#   nginx (full-page cache) -> PHP-FPM (WordPress) -> MariaDB
+#                           \-> Redis (response + object store)
+#
+#   make up        # build + start everything
+#   make bench     # run the k6 load test against it
+#
+# Everything here is generic, open-source WordPress. No proprietary content,
+# themes, or data - the value is the caching architecture, which is the point.
+
+services:
+  nginx:
+    # OpenResty ships the srcache / redis2 / set-misc / headers-more modules
+    # used by the full-page cache. Stock nginx would need a custom build.
+    image: openresty/openresty:1.27.1.2-2-bookworm
+    user: www-data
+    depends_on: [php, redis]
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/sites:/etc/nginx/sites:ro
+      - ./nginx/html:/etc/nginx/html:ro
+      - wp_data:/var/www/html:ro
+    restart: unless-stopped
+
+  php:
+    image: wordpress:6.7-php8.3-fpm
+    depends_on: [mariadb, redis]
+    environment:
+      WORDPRESS_DB_HOST: mariadb
+      WORDPRESS_DB_USER: wp
+      WORDPRESS_DB_PASSWORD: ${DB_PASSWORD:-wp_secret}
+      WORDPRESS_DB_NAME: wordpress
+      # Redis Object Cache drop-in talks to the same Redis instance
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_REDIS_HOST', 'redis');
+        define('WP_CACHE', true);
+    volumes:
+      - wp_data:/var/www/html
+      - ./php/www.conf:/usr/local/etc/php-fpm.d/zz-tuning.conf:ro
+    restart: unless-stopped
+
+  mariadb:
+    image: mariadb:11.4
+    environment:
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wp
+      MYSQL_PASSWORD: ${DB_PASSWORD:-wp_secret}
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./mariadb/tuned.cnf:/etc/mysql/conf.d/zz-tuning.cnf:ro
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.0-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    restart: unless-stopped
+
+volumes:
+  wp_data:
+  db_data:
